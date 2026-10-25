@@ -1,3 +1,5 @@
 mcp<2
 requests
 langchain-ollama
+langchain
+langgraph

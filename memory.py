@@ -20,7 +20,7 @@ def connect():
 def init_db(reset: bool = False):
     conn = connect()
     if reset:
-        conn.executescript("DROP TABLE IF EXISTS observations; DROP TABLE IF EXISTS facts;")
+        conn.executescript("DROP TABLE IF EXISTS observations; DROP TABLE IF EXISTS facts; DROP TABLE IF EXISTS stated;")
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS observations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,10 +39,16 @@ def init_db(reset: bool = False):
             updated_at TEXT NOT NULL,
             PRIMARY KEY (user_id, key)
         );
+        CREATE TABLE IF NOT EXISTS stated (
+            user_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            PRIMARY KEY (user_id, key)
+        );
     """)
     conn.commit()
     conn.close()
-
 
 def time_bucket(ts: datetime) -> str:
     h = ts.hour
@@ -102,14 +108,31 @@ def derive_facts(user_id: str) -> list[dict]:
     return get_profile(user_id)
 
 
+def add_stated(user_id: str, signal: str, bucket: str, value: str, ts: datetime | None = None):
+    """Something the driver explicitly TOLD the assistant (source = chat)."""
+    ts = (ts or datetime.now()).isoformat()
+    conn = connect()
+    conn.execute(
+        "INSERT INTO stated (user_id, key, value, ts) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
+        (user_id, f"{signal}@{bucket}", str(value), ts),
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_profile(user_id: str) -> list[dict]:
     conn = connect()
-    rows = conn.execute(
-        "SELECT key, value, confidence, support, updated_at FROM facts "
-        "WHERE user_id=? ORDER BY key", (user_id,)
+    derived = conn.execute(
+        "SELECT key, value, confidence, support, updated_at FROM facts WHERE user_id=?", (user_id,)
     ).fetchall()
+    stated = conn.execute("SELECT key, value, ts FROM stated WHERE user_id=?", (user_id,)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    merged = {r["key"]: {**dict(r), "source": "observed"} for r in derived}
+    for r in stated:   # what the driver said explicitly wins over what we inferred
+        merged[r["key"]] = {"key": r["key"], "value": r["value"], "confidence": 1.0,
+                            "support": 0, "updated_at": r["ts"], "source": "stated"}
+    return [merged[k] for k in sorted(merged)]
 
 
 def forget(user_id: str, key: str | None = None) -> int:
@@ -118,10 +141,12 @@ def forget(user_id: str, key: str | None = None) -> int:
     conn = connect()
     if key is None:
         n = conn.execute("DELETE FROM facts WHERE user_id=?", (user_id,)).rowcount
+        n += conn.execute("DELETE FROM stated WHERE user_id=?", (user_id,)).rowcount
         conn.execute("DELETE FROM observations WHERE user_id=?", (user_id,))
     else:
         signal, _, bucket = key.partition("@")
         n = conn.execute("DELETE FROM facts WHERE user_id=? AND key=?", (user_id, key)).rowcount
+        n += conn.execute("DELETE FROM stated WHERE user_id=? AND key=?", (user_id, key)).rowcount
         conn.execute(
             "DELETE FROM observations WHERE user_id=? AND signal=? AND bucket=?",
             (user_id, signal, bucket),
