@@ -3,6 +3,7 @@ import json
 import os
 
 from mcp.server.fastmcp import FastMCP
+import memory
 
 mcp = FastMCP("car")
 
@@ -64,6 +65,11 @@ def get_current_location() -> str:
     """Current location of the vehicle (mock data)."""
     return load_state()["location"]
 
+
+@mcp.resource("car://driver/{user_id}/profile")
+def driver_profile(user_id: str) -> str:
+    """The learned and stated preferences of a driver, as JSON."""
+    return json.dumps(memory.get_profile(user_id), indent=2)
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

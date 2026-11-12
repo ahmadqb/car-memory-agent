@@ -2,7 +2,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime
-
+import re
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
@@ -23,7 +23,7 @@ RELEVANT_SIGNALS = {"cabin_temp_set", "media_genre_played"}
 # --- MCP bridge (the car state lives in car_state.json, so a new server process per call is fine) ---
 def call_mcp_tool_sync(tool_name: str, args: dict) -> str:
     async def _run():
-        params = StdioServerParameters(command=sys.executable, args=["car_server.py"])
+        params = StdioServerParameters(command=sys.executable, args=["car_server.py"], env={**os.environ})
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -89,6 +89,7 @@ def run_assistant(query: str, now: datetime | None = None, history: list | None 
     """Returns (reply, calls). history = [("user", text), ("assistant", text), ...]."""
     now = now or datetime.now()
     history = history or []
+    
     # Phase 3: an explicit preference statement is remembered, not executed as a command
     remembered = remember(USER_ID, query, now)
     if remembered:
@@ -122,6 +123,14 @@ def run_assistant(query: str, now: datetime | None = None, history: list | None 
         out = call_mcp_tool_sync(tool_name, args)
         calls.append({"name": tool_name, "args": args, "source": "repair"})
         results.append({"tool": tool_name, "args": args, "status": classify_result(out), "text": out})
+
+    seen, unique = set(), []
+    for r in results:                       # the model sometimes repeats the same call
+        k = (r["tool"], str(sorted(r["args"].items())), r["status"])
+        if k not in seen:
+            seen.add(k)
+            unique.append(r)
+    results = unique
 
     reply = compose_reply(str(result["messages"][-1].content), results, p["bucket"], p["prefs"], p["text"])
     return reply, calls

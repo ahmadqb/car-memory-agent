@@ -73,5 +73,18 @@ memory.forget(U)
 assert facts() == {}
 print("6 ok: forget all")
 
+# 7. decay: old observations weigh less, stale facts expire
+fresh()
+base = datetime(2026, 10, 1, 7, 0)
+for i in range(5):    # 5 old votes for 21
+    memory.add_observation(U, "cabin_temp_set", "21", base + timedelta(days=i), derive=False)
+for i in range(3):    # 3 recent votes for 23, 40 days later
+    memory.add_observation(U, "cabin_temp_set", "23", base + timedelta(days=40 + i), derive=False)
+memory.derive_facts(U)
+assert facts()["cabin_temp_set@morning"]["value"] == "23", facts()
+memory.derive_facts(U, now=base + timedelta(days=200))
+assert "cabin_temp_set@morning" not in facts()
+print("7 ok: decay and expiry")
+
 os.remove("test_memory.db")
 print("ALL TESTS PASSED")

@@ -2,13 +2,15 @@
 import os
 import sqlite3
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DB_PATH = os.getenv("MEMORY_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory.db"))
 
 WINDOW = 10          # only the last N observations per (signal, time bucket) count -> preferences can change
 MIN_SUPPORT = 3      # need at least this many observations before we claim to "know" something
 MIN_CONFIDENCE = 0.6 # share of the window that must agree on one value
+HALF_LIFE_DAYS = 14  # an observation's weight halves every 14 days
+MAX_AGE_DAYS = 60    # a fact whose newest observation is older than this is dropped
 
 
 def connect():
@@ -76,30 +78,37 @@ def add_observation(user_id: str, signal: str, value: str, ts: datetime | None =
         derive_facts(user_id)
 
 
-def derive_facts(user_id: str) -> list[dict]:
-    """Recompute facts from the most recent observations of every (signal, bucket)."""
+def derive_facts(user_id: str, now: datetime | None = None) -> list[dict]:
+    """Recompute facts from the most recent observations of every (signal, bucket).
+    Newer observations weigh more (exponential decay); stale groups expire."""
     conn = connect()
     groups = conn.execute(
         "SELECT DISTINCT signal, bucket FROM observations WHERE user_id = ?", (user_id,)
     ).fetchall()
-    now = datetime.now().isoformat()
+    stamp = datetime.now().isoformat()
     for g in groups:
         rows = conn.execute(
-            "SELECT value FROM observations WHERE user_id=? AND signal=? AND bucket=? "
+            "SELECT value, ts FROM observations WHERE user_id=? AND signal=? AND bucket=? "
             "ORDER BY ts DESC LIMIT ?",
             (user_id, g["signal"], g["bucket"], WINDOW),
         ).fetchall()
-        values = [r["value"] for r in rows]
-        top_value, top_count = Counter(values).most_common(1)[0]
-        confidence = top_count / len(values)
+        newest = datetime.fromisoformat(rows[0]["ts"])
+        ref = now or newest   # without an explicit 'now', age is measured against the newest observation
+        weights = Counter()
+        for r in rows:
+            age_days = max((ref - datetime.fromisoformat(r["ts"])).total_seconds() / 86400, 0)
+            weights[r["value"]] += 0.5 ** (age_days / HALF_LIFE_DAYS)
+        top_value, top_weight = weights.most_common(1)[0]
+        confidence = top_weight / sum(weights.values())
+        expired = now is not None and (now - newest) > timedelta(days=MAX_AGE_DAYS)
         key = f"{g['signal']}@{g['bucket']}"
-        if len(values) >= MIN_SUPPORT and confidence >= MIN_CONFIDENCE:
+        if len(rows) >= MIN_SUPPORT and confidence >= MIN_CONFIDENCE and not expired:
             conn.execute(
                 "INSERT INTO facts (user_id, key, value, confidence, support, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, "
                 "confidence=excluded.confidence, support=excluded.support, updated_at=excluded.updated_at",
-                (user_id, key, top_value, round(confidence, 2), len(values), now),
+                (user_id, key, top_value, round(confidence, 2), len(rows), stamp),
             )
         else:
             conn.execute("DELETE FROM facts WHERE user_id=? AND key=?", (user_id, key))

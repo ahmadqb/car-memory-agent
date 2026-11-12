@@ -1,5 +1,10 @@
 mcp<2
+pydantic>=2
 requests
-langchain-ollama
 langchain
+langchain-core
+langchain-ollama
 langgraph
+a2a-sdk[http-server]==0.3.25
+uvicorn
+httpx
