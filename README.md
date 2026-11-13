@@ -8,14 +8,23 @@ The main design idea: **the LLM proposes, code decides.** A small local model is
 
 ```mermaid
 flowchart LR
-    D[Driver] --> R[Router<br/>router.py]
-    R -- "memory commands,<br/>'I prefer ...'" --> M[(SQLite memory<br/>memory.py)]
-    R -- "A2A" --> C[Comfort agent<br/>:9001]
-    R -- "A2A" --> B[Battery agent<br/>:9002]
-    C --> G[Guards<br/>guards.py]
-    G --> S[MCP car server<br/>car_server.py]
-    B --> S
+    D[Driver] --> R["Router<br/>router.py"]
+    R -- "view / forget" --> M[("SQLite memory<br/>memory.py")]
+    R -- "extract preference" --> X["Extractor<br/>extractor.py<br/>LLM (Ollama) + Pydantic"]
+    X -- "store validated memory" --> M
+    R -- "A2A: comfort requests" --> C
+    R -- "A2A: battery requests" --> B
+
+    subgraph C["Comfort agent :9001"]
+        CL["LLM + tools<br/>(Ollama)"] --- CG["Guards<br/>guards.py"]
+    end
+    subgraph B["Battery agent :9002"]
+        BL["LLM + read-only tools<br/>(Ollama)"] --- BG["Guards<br/>battery_guards.py"]
+    end
+
     C -. "reads preferences" .-> M
+    C -- "MCP (stdio)" --> S["Car MCP server<br/>car_server.py"]
+    B -- "MCP (stdio)" --> S
 ```
 
 | Part                                          | What it does                                                                                                                                                              |
