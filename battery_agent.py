@@ -69,9 +69,12 @@ def answer(query: str) -> tuple[str, list]:
 
        # the question was about the battery but the model never read it -> read it in code
        if pct is None and any(w in query.lower() for w in ("battery", "charge") + RANGE_WORDS):
-           pct = int(call_mcp_tool_sync("get_battery_level", {}))
-           calls.append({"name": "get_battery_level", "args": {}, "source": "repair"})
-           reply = summary(pct)
+        try:
+            pct = int(float(call_mcp_tool_sync("get_battery_level", {})))
+        except Exception:                      # tool failed or returned nothing: say so, never guess
+            return "I can't read the battery level right now.", calls
+        calls.append({"name": "get_battery_level", "args": {}, "source": "repair"})
+        reply = summary(pct)
 
        return guard_reply(query, reply, pct), calls
 
